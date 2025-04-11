@@ -262,9 +262,3 @@ Each test checks final parent/student balances and the Payment record’s **stat
 
 5. **PaymentLogService**:
     - Uses a separate transaction so that **FAILED** Payment records remain in the DB even if the main transaction is rolled back.
-
----
-
-## Conclusion
-
-TredBase Payment System shows how to securely handle multi-table transactions with **atomic** updates, **role-based** authorization, and **detailed** transaction logs.
