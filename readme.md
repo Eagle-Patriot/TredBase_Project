@@ -228,10 +228,10 @@ The class **`PaymentServiceIntegrationTest`** verifies:
 class PaymentServiceIntegrationTest {
 
     @Test
-    void testProcessPayment_UniqueStudent_Success() { ... }
+    void testProcessPayment_UniqueStudent_Success() {  }
 
     @Test
-    void testFail_NotAssociated() { ... }
+    void testFail_NotAssociated() { }
 
     // ...
 }
