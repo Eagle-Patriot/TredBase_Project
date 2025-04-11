@@ -1,25 +1,29 @@
 package com.example.Tredbase_payment_system.Service;
 
-import com.example.Tredbase_payment_system.Entity.Ledger;
 import com.example.Tredbase_payment_system.Entity.Parent;
 import com.example.Tredbase_payment_system.Entity.Payment;
 import com.example.Tredbase_payment_system.Entity.Student;
-import com.example.Tredbase_payment_system.Repository.LedgerRepository;
 import com.example.Tredbase_payment_system.Repository.ParentRepository;
 import com.example.Tredbase_payment_system.Repository.PaymentRepository;
 import com.example.Tredbase_payment_system.Repository.StudentRepository;
-import com.example.Tredbase_payment_system.Utils.TransactionStatus;
+import com.example.Tredbase_payment_system.Enums.TransactionStatus;
 import jakarta.transaction.Transactional;
-import lombok.AllArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
+@RequiredArgsConstructor
 public class PaymentService {
+
+    private static final Logger logger = LoggerFactory.getLogger(PaymentService.class);
+
     @Autowired
     private final ParentRepository parentRepo;
     @Autowired
@@ -27,69 +31,116 @@ public class PaymentService {
     @Autowired
     private final PaymentRepository paymentRepo;
     @Autowired
-    private final LedgerRepository ledgerRepo;
+    private final PaymentLogService paymentLogService;
 
-    public PaymentService(ParentRepository parentRepo, StudentRepository studentRepo, PaymentRepository paymentRepo, LedgerRepository ledgerRepo) {
-        this.parentRepo = parentRepo;
-        this.studentRepo = studentRepo;
-        this.paymentRepo = paymentRepo;
-        this.ledgerRepo = ledgerRepo;
-    }
-
+    /*
+      Process a payment from a specific parent to a specific student.
+      Ensures that only the student's own parent can pay.
+      Splits payment among parents if the student is shared,
+      or charges the initiating parent fully if not shared.
+     */
     @Transactional
     public void processPayment(Long parentId, Long studentId, Double paymentAmount) {
-        Payment payment = new Payment();
+
+        Payment successpayment = new Payment();
+
         try {
+            // 1. Validate parent
             Parent payingParent = parentRepo.findById(parentId)
-                    .orElseThrow(() -> new IllegalArgumentException("Parent not found"));
+                    .orElseThrow(() -> {
+                        String msg = "Parent not found with ID: " + parentId;
+                        logger.error(msg);
+                        return new IllegalArgumentException(msg);
+                    });
 
+            // 2. Validate student
             Student student = studentRepo.findById(studentId)
-                    .orElseThrow(() -> new IllegalArgumentException("Student not found"));
+                    .orElseThrow(() -> {
+                        String msg = "Student not found with ID: " + studentId;
+                        logger.error(msg);
+                        return new IllegalArgumentException(msg);
+                    });
 
-            double dynamicRate = 0.05;
-            double adjustedAmount = paymentAmount * (1 + dynamicRate);
-
-            payment.setParentId(parentId);
-            payment.setStudentId(studentId);
-            payment.setAmount(paymentAmount);
-            payment.setPaymentDate(LocalDateTime.now());
-
-            paymentRepo.save(payment);
-
-            if (student.getParents().size() == 2) {
-                for (Parent parent : student.getParents()) {
-                    double deduction = adjustedAmount / 2;
-                    parent.setBalance(parent.getBalance() - deduction);
-                    parentRepo.save(parent);
-                }
-            } else {
-                payingParent.setBalance(payingParent.getBalance() - adjustedAmount);
-                parentRepo.save(payingParent);
+            // 3. Check if parent is associated with that student
+            boolean isAssociated = student.getParents()
+                    .stream()
+                    .anyMatch(p -> p.getId().equals(payingParent.getId()));
+            if (!isAssociated) {
+                String msg = String.format("Parent (ID=%d) not associated with Student (ID=%d).",
+                        parentId, studentId);
+                logger.error(msg);
+                throw new IllegalArgumentException(msg);
             }
 
+            // 4. Validate payment amount
+            double dynamicRate = 0.05;
+            double adjustedAmount = paymentAmount * (1 + dynamicRate);
+            logger.info("Payment request: parentId={}, studentId={}, paymentAmount={}, adjustedAmount={}",
+                    parentId, studentId, paymentAmount, adjustedAmount);
+
+            // 5. Check if parent has sufficient balance
+            if (payingParent.getBalance() < adjustedAmount) {
+                String msg = "Insufficient balance for parent ID: " + parentId;
+                logger.warn(msg);
+                throw new IllegalArgumentException(msg);
+            }
+
+            // 6. Deduct amount from parent(s)
+            if (student.getParents().size() == 2) {
+                // Shared student => split the payment among the two parents
+                for (Parent parent : student.getParents()) {
+                    double halfDeduction = adjustedAmount / 2;
+                    if (parent.getBalance() < halfDeduction) {
+                        String msg = String.format("Insufficient balance in one of the shared parents (ID=%d).",
+                                parent.getId());
+                        logger.warn(msg);
+                        throw new IllegalArgumentException(msg);
+                    }
+                    parent.setBalance(parent.getBalance() - halfDeduction);
+                    parentRepo.save(parent);
+                    logger.info("Deducted {} from shared Parent (ID={}). New balance={}",
+                            halfDeduction, parent.getId(), parent.getBalance());
+                }
+            } else {
+                // Unique student => only the paying parent is charged
+                payingParent.setBalance(payingParent.getBalance() - adjustedAmount);
+                parentRepo.save(payingParent);
+                logger.info("Deducted {} from Parent (ID={}). New balance={}",
+                        adjustedAmount, payingParent.getId(), payingParent.getBalance());
+            }
+
+            // 7. Update student's balance
+            double oldStudentBalance = student.getBalance();
             student.setBalance(student.getBalance() + paymentAmount);
             studentRepo.save(student);
+            logger.info("Updated Student (ID={}) balance from {} to {}",
+                    studentId, oldStudentBalance, student.getBalance());
 
-            // Save success in ledger
-            Ledger ledger = new Ledger(payment.getId(),
-                    payingParent.getName(),
-                    student.getStudentName(),
-                    adjustedAmount,
-                    TransactionStatus.SUCCESS,
-                    LocalDateTime.now());
-            ledgerRepo.save(ledger);
+            // 8. Record successful payment
+            successpayment.setParentId(parentId);
+            successpayment.setStudentId(studentId);
+            successpayment.setAmount(paymentAmount);
+            successpayment.setStatus(TransactionStatus.SUCCESS);
+            successpayment.setPaymentDate(LocalDateTime.now());
+            successpayment.setDescription("Payment processed successfully.");
+            paymentRepo.save(successpayment);
+
+            logger.info("Payment processed successfully. Payment record created with ID={}", successpayment.getId());
 
         } catch (Exception ex) {
-            // Save failure in ledger
-            Ledger ledger = new Ledger(null, payment.getId(),
-                    "Unknown",
-                    "Unknown",
-                    paymentAmount,
-                    TransactionStatus.FAILED,
-                    LocalDateTime.now());
-            ledgerRepo.save(ledger);
+            // 9. Handle exceptions and rollback
+            Payment failedPayment = new Payment();
+            failedPayment.setParentId(parentId);
+            failedPayment.setStudentId(studentId);
+            failedPayment.setAmount(paymentAmount);
+            failedPayment.setPaymentDate(LocalDateTime.now());
+            failedPayment.setStatus(TransactionStatus.FAILED);
+            failedPayment.setDescription("Payment failed: " + ex.getMessage());
+            paymentLogService.logPayment(failedPayment);
 
-            throw ex; // trigger rollback
+            logger.error("Payment processing failed. Reason: {}", ex.getMessage(), ex);
+            // Rethrow to trigger rollback
+            throw ex;
         }
     }
 
@@ -97,7 +148,7 @@ public class PaymentService {
         return studentRepo.findAll();
     }
 
-    public List<Ledger> getLedger() {
-        return ledgerRepo.findAll();
+    public List<Payment> getPayments() {
+        return paymentRepo.findAll();
     }
 }

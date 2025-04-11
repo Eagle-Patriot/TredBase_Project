@@ -2,8 +2,7 @@ package com.example.Tredbase_payment_system.Controller;
 
 
 import com.example.Tredbase_payment_system.Dto.PaymentRequest;
-import com.example.Tredbase_payment_system.Entity.Ledger;
-import com.example.Tredbase_payment_system.Entity.Parent;
+import com.example.Tredbase_payment_system.Entity.Payment;
 import com.example.Tredbase_payment_system.Entity.Student;
 import com.example.Tredbase_payment_system.Service.PaymentService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,15 +24,18 @@ public class PaymentController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @PostMapping(path = "/api_payment")
+    @PostMapping(path = "/api/payment")
     public ResponseEntity<String> processPayment(@RequestBody PaymentRequest paymentRequest) {
-
-        paymentService.processPayment(
-                paymentRequest.getParentId(),
-                paymentRequest.getStudentId(),
-                paymentRequest.getPaymentAmount()
-        );
-        return ResponseEntity.ok("Payment processed successfully");
+        try {
+            paymentService.processPayment(
+                    paymentRequest.getParentId(),
+                    paymentRequest.getStudentId(),
+                    paymentRequest.getPaymentAmount()
+            );
+            return ResponseEntity.ok("Payment processed successfully");
+        } catch (IllegalArgumentException ex){
+            return ResponseEntity.badRequest().body("Payment failed: " + ex.getMessage());
+        }
     }
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -43,9 +45,9 @@ public class PaymentController {
     }
 
     @PreAuthorize("hasRole('ADMIN')")
-    @GetMapping(path = "/ledgers")
-    public List<Ledger> getTransactionHistory() {
-        return paymentService.getLedger();
+    @GetMapping(path = "/payments")
+    public List<Payment> getPayments() {
+        return paymentService.getPayments();
     }
 
 }
